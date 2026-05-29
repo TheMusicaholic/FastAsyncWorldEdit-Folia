@@ -1,0 +1,49 @@
+name: CI
+
+# General-purpose build workflow for forks/branches.
+# Unlike build.yml (which publishes to Maven Central/Modrinth and is bound to the
+# upstream IntellectualSites secrets), this workflow only compiles the project,
+# runs the tests and uploads the resulting plugin jar as a build artifact, so it
+# works on any fork without additional configuration.
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          cache: gradle
+          java-version: 24
+
+      - name: Build
+        run: ./gradlew build -s
+
+      - name: Archive plugin jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: FastAsyncWorldEdit-Bukkit
+          path: worldedit-bukkit/build/libs/FastAsyncWorldEdit-*.jar
+          if-no-files-found: error
