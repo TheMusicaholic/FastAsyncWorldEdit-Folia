@@ -137,7 +137,10 @@ public class BukkitServerInterface extends AbstractPlatform implements MultiUser
     @Override
     public int schedule(long delay, long period, Runnable task) {
         if (FoliaUtil.isFoliaServer()) {
-            return 0;
+            // There is no main thread on Folia / Canvas, so a single sync repeating task cannot touch arbitrary world
+            // positions. Report "not scheduled" (-1) so callers (e.g. the block break effect queue) do not queue work that
+            // would never be drained.
+            return -1;
         }
         return Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, task, delay, period);
     }
