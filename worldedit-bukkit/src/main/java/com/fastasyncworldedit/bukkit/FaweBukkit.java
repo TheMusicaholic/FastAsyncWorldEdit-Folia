@@ -21,6 +21,7 @@ import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.queue.implementation.preloader.AsyncPreloader;
 import com.fastasyncworldedit.core.queue.implementation.preloader.Preloader;
 import com.fastasyncworldedit.core.regions.FaweMaskManager;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.WEManager;
 import com.fastasyncworldedit.core.util.image.ImageViewer;
@@ -64,6 +65,14 @@ public class FaweBukkit implements IFawe, Listener {
 
     public FaweBukkit(Plugin plugin) {
         this.plugin = plugin;
+        //FAWE start - Folia / Canvas
+        if (FoliaUtil.isFoliaServer()) {
+            LOGGER.info(
+                    "Region-threaded server detected ({}). Using region-aware scheduling for world, entity and chunk access.",
+                    Bukkit.getName()
+            );
+        }
+        //FAWE end
         try {
             Fawe.set(this);
             Fawe.setupInjector();

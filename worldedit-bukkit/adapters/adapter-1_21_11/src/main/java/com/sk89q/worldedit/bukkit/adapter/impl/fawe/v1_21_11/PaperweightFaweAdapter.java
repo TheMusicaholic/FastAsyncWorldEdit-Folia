@@ -2,6 +2,7 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v1_21_11;
 
 import com.fastasyncworldedit.bukkit.adapter.FaweAdapter;
 import com.fastasyncworldedit.bukkit.adapter.NMSRelighterFactory;
+import com.fastasyncworldedit.bukkit.util.BukkitTaskManager;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.entity.LazyBaseEntity;
 import com.fastasyncworldedit.core.extent.processor.PlacementStateProcessor;
@@ -132,7 +133,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -361,6 +361,12 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
             //add Id for AbstractChangeSet to work
             return output.toBuilder().putString("Id", id).build();
         };
+        //FAWE start - Folia / Canvas: entity NBT must be captured on the region owning the entity
+        if (FoliaUtil.isFoliaServer()) {
+            final Supplier<LinCompoundTag> rawSaveTag = saveTag;
+            return new LazyBaseEntity(type, () -> ((BukkitTaskManager) TaskManager.taskManager()).syncWith(entity, rawSaveTag, null));
+        }
+        //FAWE end
         return new LazyBaseEntity(type, saveTag);
     }
 
@@ -565,17 +571,8 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
     }
 
     private <T> T syncRegion(World world, BlockVector3 pt, java.util.function.Supplier<T> supplier) {
-        if (FoliaUtil.isFoliaServer()) {
-            Location location = new Location(world, pt.x(), pt.y(), pt.z());
-            CompletableFuture<T> future = new CompletableFuture<>();
-            Bukkit.getServer().getRegionScheduler().run(
-                    WorldEditPlugin.getInstance(),
-                    location,
-                    scheduledTask -> future.complete(supplier.get())
-            );
-            return future.join();
-        }
-        return TaskManager.taskManager().sync(supplier);
+        // Runs inline if the current thread already owns the region (avoids self-deadlock on Folia); main thread otherwise
+        return TaskManager.taskManager().syncAt(BukkitAdapter.adapt(world), pt.x() >> 4, pt.z() >> 4, supplier);
     }
 
     @Override

@@ -4,7 +4,9 @@ import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.util.task.RunnableVal;
+import com.sk89q.worldedit.entity.Entity;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
+import com.sk89q.worldedit.world.World;
 import org.apache.logging.log4j.Logger;
 
 import javax.annotation.Nonnull;
@@ -314,6 +316,79 @@ public abstract class TaskManager {
             Fawe.instance().getQueueHandler().sync(run);
         }
     }
+
+    //FAWE start - region-aware scheduling (Folia / Canvas)
+
+    /**
+     * Whether the current thread may access the given chunk directly. On regionised servers (Folia, Canvas) this is
+     * true only on the tick thread owning the region the chunk belongs to. Elsewhere this is equivalent to
+     * {@link Fawe#isMainThread()}.
+     *
+     * @param world  the world
+     * @param chunkX chunk x coordinate
+     * @param chunkZ chunk z coordinate
+     * @return whether the current thread owns the chunk
+     * @since TODO
+     */
+    public boolean isOwnedByCurrentRegion(@Nonnull World world, int chunkX, int chunkZ) {
+        return Fawe.isMainThread();
+    }
+
+    /**
+     * Run a task on the thread owning the given chunk and wait for its result. Runs inline if the current thread already
+     * owns that chunk (so never deadlocks on itself). On non-regionised servers this is {@link #sync(Supplier)}.
+     *
+     * @param world    the world
+     * @param chunkX   chunk x coordinate
+     * @param chunkZ   chunk z coordinate
+     * @param supplier the task
+     * @return the result of the task
+     * @since TODO
+     */
+    public <T> T syncAt(@Nonnull World world, int chunkX, int chunkZ, @Nonnull Supplier<T> supplier) {
+        return sync(supplier);
+    }
+
+    /**
+     * Run a task on the thread owning the given chunk without waiting. Runs inline if the current thread already owns
+     * the chunk. On non-regionised servers this is {@link #taskNowMain(Runnable)}.
+     *
+     * @param world    the world
+     * @param chunkX   chunk x coordinate
+     * @param chunkZ   chunk z coordinate
+     * @param runnable the task
+     * @since TODO
+     */
+    public void taskAt(@Nonnull World world, int chunkX, int chunkZ, @Nonnull Runnable runnable) {
+        taskNowMain(runnable);
+    }
+
+    /**
+     * Run a task on the thread owning the given entity (for players: the thread ticking the player) and wait for its
+     * result. Runs inline if the current thread already owns the entity. On non-regionised servers this is
+     * {@link #sync(Supplier)}.
+     *
+     * @param entity   the entity, usually a player
+     * @param supplier the task
+     * @return the result of the task, or {@code null} if the entity was removed before the task could run
+     * @since TODO
+     */
+    public <T> T syncWith(@Nonnull Entity entity, @Nonnull Supplier<T> supplier) {
+        return sync(supplier);
+    }
+
+    /**
+     * Run a task on the thread owning the given entity without waiting. On non-regionised servers this is
+     * {@link #taskNowMain(Runnable)}.
+     *
+     * @param entity   the entity, usually a player
+     * @param runnable the task
+     * @since TODO
+     */
+    public void taskWith(@Nonnull Entity entity, @Nonnull Runnable runnable) {
+        taskNowMain(runnable);
+    }
+    //FAWE end
 
     /**
      * Run a task on the main thread when the TPS is high enough, and wait for execution to finish.

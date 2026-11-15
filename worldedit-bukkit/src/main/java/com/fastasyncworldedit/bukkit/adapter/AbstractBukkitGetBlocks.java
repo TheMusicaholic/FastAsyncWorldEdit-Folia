@@ -10,13 +10,17 @@ import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.fastasyncworldedit.core.queue.IQueueExtent;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.queue.implementation.blocks.CharGetBlocks;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.MemUtil;
 import com.fastasyncworldedit.core.util.task.FaweThreadUtil;
+import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.extent.Extent;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.util.formatting.text.TextComponent;
 import org.apache.logging.log4j.Logger;
+import org.bukkit.Bukkit;
 
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -54,6 +58,19 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
     }
 
     protected abstract void send();
+
+    //FAWE start - Folia / Canvas
+    /**
+     * The Bukkit world of this chunk. Used to schedule chunk-local work on the region owning the chunk on regionised
+     * servers (Folia, Canvas).
+     *
+     * @return the Bukkit world, or {@code null} if unavailable
+     */
+    @Nullable
+    protected org.bukkit.World getBukkitWorld() {
+        return null;
+    }
+    //FAWE end
 
     protected abstract CompletableFuture<LevelChunk> ensureLoaded(ServerLevel serverLevel);
 
@@ -170,6 +187,27 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
                     throw e;
                 }
             };
+            //FAWE start - Folia / Canvas: run the whole chunk's sync work as ONE task on the region owning the chunk.
+            // The global region thread (which drains QueueHandler's sync queue on Folia) may not touch chunk data.
+            org.bukkit.World world;
+            if (FoliaUtil.isFoliaServer() && (world = getBukkitWorld()) != null) {
+                CompletableFuture<Future<?>> result = new CompletableFuture<>();
+                Runnable run = () -> {
+                    try {
+                        result.complete(chain.call());
+                    } catch (Throwable t) {
+                        result.completeExceptionally(t);
+                    }
+                };
+                if (Bukkit.isOwnedByCurrentRegion(world, chunkX, chunkZ)) {
+                    run.run();
+                } else {
+                    Bukkit.getRegionScheduler().execute(WorldEditPlugin.getInstance(), world, chunkX, chunkZ, run);
+                }
+                //noinspection unchecked - required at compile time
+                return (T) (Future) result;
+            }
+            //FAWE end
             //noinspection unchecked - required at compile time
             return (T) (Future) queueHandler.sync(chain);
         } else {

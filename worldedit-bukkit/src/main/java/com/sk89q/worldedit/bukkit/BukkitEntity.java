@@ -19,6 +19,7 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.bukkit.util.BukkitTaskManager;
 import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
@@ -30,12 +31,10 @@ import com.sk89q.worldedit.extent.Extent;
 import com.sk89q.worldedit.util.Location;
 import com.sk89q.worldedit.world.NullWorld;
 import io.papermc.lib.PaperLib;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.EntityType;
 
 import javax.annotation.Nullable;
 import java.lang.ref.WeakReference;
-import java.util.concurrent.CompletableFuture;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -63,6 +62,22 @@ public class BukkitEntity implements Entity {
         //FAWE end
         this.entityRef = new WeakReference<>(entity);
     }
+
+    //FAWE start
+    /**
+     * Get the underlying Bukkit entity, if it is still referenced.
+     *
+     * @return the Bukkit entity or {@code null}
+     */
+    @Nullable
+    public org.bukkit.entity.Entity getBukkitEntity() {
+        return entityRef.get();
+    }
+
+    private static BukkitTaskManager taskManager() {
+        return (BukkitTaskManager) TaskManager.taskManager();
+    }
+    //FAWE end
 
     @Override
     public Extent getExtent() {
@@ -109,14 +124,9 @@ public class BukkitEntity implements Entity {
             BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
             if (adapter != null) {
                 if (FoliaUtil.isFoliaServer()) {
-                    org.bukkit.Location location = entity.getLocation();
-                    CompletableFuture<BaseEntity> future = new CompletableFuture<>();
-                    Bukkit.getServer().getRegionScheduler().run(
-                            WorldEditPlugin.getInstance(),
-                            location,
-                            scheduledTask -> future.complete(adapter.getEntity(entity))
-                    );
-                    return future.join();
+                    // Entity data must be read on the entity's owning region; the entity scheduler follows the entity
+                    // across regions and runs inline if we already own it.
+                    return taskManager().syncWith(entity, () -> adapter.getEntity(entity), null);
                 }
                 return adapter.getEntity(entity);
             } else {
@@ -130,19 +140,19 @@ public class BukkitEntity implements Entity {
     @Override
     public boolean remove() {
         if (FoliaUtil.isFoliaServer()) {
-            return TaskManager.taskManager().syncWhenFree(() -> {
-                org.bukkit.entity.Entity entity = entityRef.get();
-                if (entity != null) {
-                    try {
-                        entity.getScheduler().execute(WorldEditPlugin.getInstance(), entity::remove, null, 1);
-                        return true;
-                    } catch (UnsupportedOperationException e) {
-                        return false;
-                    }
-                } else {
-                    return true;
+            org.bukkit.entity.Entity entity = entityRef.get();
+            if (entity == null) {
+                return true;
+            }
+            // Retired (already removed / unloaded) counts as removed.
+            return taskManager().syncWith(entity, () -> {
+                try {
+                    entity.remove();
+                } catch (UnsupportedOperationException e) {
+                    return false;
                 }
-            });
+                return true;
+            }, true);
         }
         // synchronize the whole method, not just the remove operation as we always need to synchronize and
         // can make sure the entity reference was not invalidated in the few milliseconds between the next available tick (lol)

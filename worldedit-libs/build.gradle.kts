@@ -1,3 +1,4 @@
 tasks.register("build") {
-    dependsOn(subprojects.map { it.tasks.named("build") })
+    // Use task paths so subproject tasks are resolved lazily (subprojects may not be configured yet).
+    dependsOn(subprojects.map { "${it.path}:build" })
 }

@@ -27,6 +27,7 @@ import com.fastasyncworldedit.core.internal.exception.FaweException;
 import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
 import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.implementation.packet.ChunkPacket;
+import com.fastasyncworldedit.bukkit.util.BukkitTaskManager;
 import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.google.common.collect.ImmutableSet;
@@ -68,7 +69,6 @@ import org.bukkit.TreeType;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
-import org.bukkit.Location;
 import org.bukkit.block.Chest;
 import org.bukkit.entity.Entity;
 import org.bukkit.inventory.Inventory;
@@ -148,27 +148,54 @@ public class BukkitWorld extends AbstractWorld {
         }
     }
 
-    private <T> T syncRegion(BlockVector3 position, java.util.function.Supplier<T> supplier) {
-        if (FoliaUtil.isFoliaServer()) {
-            World world = getWorld();
-            Location location = new Location(world, position.x(), position.y(), position.z());
-            CompletableFuture<T> future = new CompletableFuture<>();
-            Bukkit.getServer().getRegionScheduler().run(
-                    WorldEditPlugin.getInstance(),
-                    location,
-                    scheduledTask -> future.complete(supplier.get())
-            );
-            return future.join();
-        }
-        return TaskManager.taskManager().sync(supplier);
+    //FAWE start - region-aware entity access (Folia / Canvas)
+    private static BukkitTaskManager taskManager() {
+        return (BukkitTaskManager) TaskManager.taskManager();
     }
 
     @Override
     public List<com.sk89q.worldedit.entity.Entity> getEntities(Region region) {
         World world = getWorld();
-
-        List<Entity> ents = syncRegion(region.getMinimumPoint(), world::getEntities);
         List<com.sk89q.worldedit.entity.Entity> entities = new ArrayList<>();
+        if (FoliaUtil.isFoliaServer()) {
+            // There is no single thread owning the whole world: read each loaded chunk on the region owning it. All chunk
+            // reads are dispatched at once so regions process them in parallel within the same tick.
+            BlockVector3 min = region.getMinimumPoint();
+            BlockVector3 max = region.getMaximumPoint();
+            List<CompletableFuture<Entity[]>> futures = new ArrayList<>();
+            for (int chunkX = min.x() >> 4; chunkX <= max.x() >> 4; chunkX++) {
+                for (int chunkZ = min.z() >> 4; chunkZ <= max.z() >> 4; chunkZ++) {
+                    if (!world.isChunkLoaded(chunkX, chunkZ)) {
+                        continue;
+                    }
+                    final int cx = chunkX;
+                    final int cz = chunkZ;
+                    CompletableFuture<Entity[]> future = new CompletableFuture<>();
+                    futures.add(future);
+                    Runnable read = () -> {
+                        try {
+                            future.complete(world.isChunkLoaded(cx, cz) ? world.getChunkAt(cx, cz).getEntities() : new Entity[0]);
+                        } catch (Throwable t) {
+                            future.completeExceptionally(t);
+                        }
+                    };
+                    if (Bukkit.isOwnedByCurrentRegion(world, cx, cz)) {
+                        read.run();
+                    } else {
+                        Bukkit.getRegionScheduler().execute(WorldEditPlugin.getInstance(), world, cx, cz, read);
+                    }
+                }
+            }
+            for (CompletableFuture<Entity[]> future : futures) {
+                for (Entity ent : future.join()) {
+                    if (region.contains(BukkitAdapter.asBlockVector(ent.getLocation()))) {
+                        entities.add(BukkitAdapter.adapt(ent));
+                    }
+                }
+            }
+            return entities;
+        }
+        List<Entity> ents = TaskManager.taskManager().sync(world::getEntities);
         for (Entity ent : ents) {
             if (region.contains(BukkitAdapter.asBlockVector(ent.getLocation()))) {
                 entities.add(BukkitAdapter.adapt(ent));
@@ -180,8 +207,10 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public List<com.sk89q.worldedit.entity.Entity> getEntities() {
         List<com.sk89q.worldedit.entity.Entity> list = new ArrayList<>();
-
-        List<Entity> ents = syncRegion(BlockVector3.ZERO, getWorld()::getEntities);
+        World world = getWorld();
+        List<Entity> ents = FoliaUtil.isFoliaServer()
+                ? taskManager().syncAt(world.getSpawnLocation(), world::getEntities)
+                : TaskManager.taskManager().sync(world::getEntities);
         for (Entity entity : ents) {
             list.add(BukkitAdapter.adapt(entity));
         }
@@ -191,9 +220,14 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public int removeEntities(final Region region) {
         List<com.sk89q.worldedit.entity.Entity> entities = getEntities(region);
-        return syncRegion(region.getMinimumPoint(), () -> entities.stream()
+        if (FoliaUtil.isFoliaServer()) {
+            // Each removal is scheduled on the entity's own region by BukkitEntity#remove
+            return entities.stream().mapToInt(entity -> entity.remove() ? 1 : 0).sum();
+        }
+        return TaskManager.taskManager().sync(() -> entities.stream()
                 .mapToInt(entity -> entity.remove() ? 1 : 0).sum());
     }
+    //FAWE end
 
     //FAWE: createEntity was moved to IChunkExtent to prevent issues with Async Entity Add.
 
@@ -318,7 +352,7 @@ public class BukkitWorld extends AbstractWorld {
             return false;
         }
 
-        TaskManager.taskManager().sync(() -> {
+        TaskManager.taskManager().syncAt(this, pt.x() >> 4, pt.z() >> 4, () -> {
             InventoryHolder chest = (InventoryHolder) state;
             Inventory inven = chest.getInventory();
             if (chest instanceof Chest) {
